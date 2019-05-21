@@ -1,0 +1,118 @@
+- name: "Ensure sqlite3 package is installed"
+  package:
+    name: sqlite3
+    state: present
+  tags: check
+
+- name: "Backup default gerbera.db"
+  archive:
+    path: "{{ gerbera_db }}"
+  tags: db_copy,check
+
+- name: "Download the latest channel list from init7"
+  get_url:
+    dest: "{{ tv7_local }}"
+    url: "{{ tv7_latest }}"
+  tags: check
+
+- name: "tv7: Get Channel List"
+  xml:
+    path: "{{ tv7_local }}"
+    namespaces:
+      ns: http://xspf.org/ns/0/
+    xpath: /ns:playlist/ns:trackList/ns:track/ns:location
+    count: yes
+  register: hits
+  tags: count,list,check
+
+- name: "tv7: Show channels list"
+  debug:
+    msg: "Channels found {{ hits.count }}"
+  tags: count,list,check
+
+- name: "tv7: Get Channel Name"
+  xml:
+    path: "{{ tv7_local }}"
+    namespaces:
+      ns: http://xspf.org/ns/0/
+    xpath: /ns:playlist/ns:trackList/ns:track/ns:title
+    content: 'text'
+  register: name
+  no_log: true
+  tags: count,list,check
+
+- name: "tv7: Get Channel Location"
+  xml:
+    path: "{{ tv7_local }}"
+    namespaces:
+      ns: http://xspf.org/ns/0/
+    xpath: /ns:playlist/ns:trackList/ns:track/ns:location
+    content: 'text'
+  register: url
+  no_log: true
+  tags: count,list,check
+
+- name: "Ensure Gerbera is stopped"
+  service:
+    name: gerbera
+    state: stopped
+  tags: db,check
+
+- name: "Restore default gerbera.db file"
+  copy:
+    src: gerbera.db
+    dest: /var/lib/gerbera/gerbera.db
+    owner: gerbera
+    group: gerbera
+    mode: 0644
+  tags: restore
+
+- name: "Delete PC Directory from Gerbera"
+  command:
+    sqlite3 "{{ gerbera_db }}" "DELETE from mt_cds_object where dc_title = 'PC Directory'"
+  tags: db,check
+
+- name: "Check if Fiber7 root is already present"
+  shell:
+    sqlite3 "{{ gerbera_db }}" "SELECT id,object_type,upnp_class,dc_title from mt_cds_object where upnp_class = 'object.container' and dc_title = 'Fiber7 TV';"
+  register: tv7_root
+  tags: check
+
+- name: "Get Fiber7 TV object_container id from db"
+  shell:
+    sqlite3 /var/lib/gerbera/gerbera.db "SELECT id from mt_cds_object where upnp_class = 'object.container' and dc_title = 'Fiber7 TV'"
+  register: tv7_id
+  tags: check
+
+- name: "Show Fiber7 TV id from db"
+  debug: var=tv7_id.stdout_lines
+  tags: check
+
+- name: "Show Fiber7 Root DB"
+  debug: var=tv7_root.stdout_lines
+  tags: check
+
+- name: "Delete Fiber7 TV from Gerbera"
+  command:
+    sqlite3 "{{ gerbera_db }}" "DELETE from mt_cds_object where dc_title = 'Fiber7 TV'"
+  when: tv7_root.stdout_lines
+  tags: db,check
+
+- name: "Add Fiber7 TV Root"
+  command:
+    sqlite3 "{{ gerbera_db }}" "INSERT INTO mt_cds_object ( object_type, upnp_class, dc_title ) values ( '1', 'object.container', 'Fiber7 TV' )"
+  tags: db,check
+
+- name: "Add channels into Gerbera"
+  command:
+    sqlite3 "{{ gerbera_db }}" "INSERT INTO {{ gerbera_table }} ( object_type, upnp_class, dc_title, location, parent_id, resources, mime_type ) values ( '10', 'objet.item.videoItem', '{{ item.0['{http://xspf.org/ns/0/}title'] }}', '{{ udpxy_url }}/{{ item.1['{http://xspf.org/ns/0/}location']|replace('udp://@','udp/') }}', '1', '0~protocolInfo=http-get%3A%2A%3Aapplication%2Foctet-stream%3A%2A~~', 'application/octet-stream' );"
+  with_together:
+    - "{{ name.matches | list }}"
+    - "{{ url.matches | list }}"
+  tags: count,list,channels
+
+- name: "Ensure Gerbera is started"
+  service:
+    name: gerbera
+    state: started
+  tags: db
